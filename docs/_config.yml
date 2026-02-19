@@ -2,8 +2,8 @@ title: Sixth Server
 description: A Forth HTTP/JSON server framework compiled to native ARM64 binaries
 remote_theme: just-the-docs/just-the-docs
 
-url: ""
-baseurl: ""
+url: "https://quivent.github.io"
+baseurl: "/sixth-server"
 
 permalink: pretty
 
@@ -13,7 +13,7 @@ exclude:
 
 aux_links:
   "GitHub":
-    - "https://github.com/joshkornreich/sixth-server"
+    - "https://github.com/quivent/sixth-server"
 
 color_scheme: dark
 

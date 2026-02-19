@@ -1,0 +1,3 @@
+bin/dashboard-server
+*.db
+/tmp/

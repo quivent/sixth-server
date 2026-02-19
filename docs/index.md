@@ -6,18 +6,33 @@ nav_order: 1
 
 # Sixth Server
 
-A general-purpose HTTP/JSON server framework written in Forth, compiled to native ARM64 binaries via the bundled Sixth compiler. No interpreter, no VM, no runtime dependencies. A 30-line Forth file compiles to a ~100KB native executable that serves JSON APIs.
+A general-purpose HTTP/JSON server framework written in Forth, compiled to native ARM64 binaries. No interpreter, no VM, no runtime dependencies.
+
+The entire framework is ~1,000 lines of Forth. The compiler that builds it is 291KB. A 22-endpoint API server compiles to a 97KB native binary. From source to running server is one command and takes milliseconds.
 
 ---
 
-## Why Sixth Server
+## By the Numbers
 
-- **No runtime** -- compiles to a native ARM64 Mach-O binary. No interpreter, no VM, no shared libraries
-- **Tiny binaries** -- a complete API server in ~100KB
-- **Layered architecture** -- link only what you need: core, HTTP, JSON, database
-- **Database-agnostic** -- swap SQLite, SixthDB CLI, or SixthDB direct-link without changing endpoint code
-- **DSL endpoints** -- declare typed fields and a SQL query; the framework handles parsing, JSON generation, and chunked streaming
-- **Escape hatch** -- any `( fd -- )` word works as a handler, giving full access to all primitives
+| | |
+|---|---|
+| **97KB** | Binary size of a 22-endpoint production API server |
+| **291KB** | The Sixth compiler itself -- reads Forth, emits ARM64 Mach-O |
+| **~1,000 lines** | The entire framework: HTTP, JSON, routing, database bridge, chunked streaming |
+| **~7 lines** | A typical database-backed JSON endpoint using the field DSL |
+| **1 command** | `./bin/s3 my-server.fs bin/my-server` -- source to native binary |
+| **0 dependencies** | No runtime, no shared libraries, no package manager |
+
+## What Makes It Different
+
+Most server frameworks optimize for developer ergonomics at the cost of massive dependency trees, startup times, and binary sizes. Sixth Server goes the other direction: the entire stack -- compiler, framework, and your application -- fits in under 400KB and compiles instantly.
+
+- **The compiler ships with the project.** `bin/s3` is a 291KB native binary. There is no toolchain to install, no version to manage. It reads Forth source and writes an ARM64 Mach-O executable.
+- **Compilation is instant.** The Sixth compiler does a single pass over the source. A 600-line server compiles in milliseconds, not seconds.
+- **Binaries are tiny and self-contained.** A 22-endpoint API server with SQLite support, chunked transfer encoding, CORS, and static file serving compiles to 97KB. No dynamic linking, no runtime loader.
+- **The framework is small enough to read.** Six library files totaling ~1,000 lines. You can read the entire HTTP layer (350 lines), the entire JSON generator (150 lines), or the entire route dispatcher (165 lines) in a sitting. There is no hidden complexity.
+- **Endpoints collapse to declarations.** The field DSL turns a database-backed JSON endpoint into ~7 lines: declare typed columns, provide a SQL query, done. The framework handles query execution, row parsing, JSON generation, and chunked HTTP streaming.
+- **Swappable database backends.** A 9-word driver contract means you can switch between SQLite (subprocess), SixthDB CLI (subprocess), or SixthDB direct-link (mmap, no subprocess) without changing a single endpoint.
 
 ## Quick Example
 
@@ -63,6 +78,8 @@ Build and run:
 # curl localhost:8080/health        → {"status":"ok"}
 # curl localhost:8080/api/users     → [{"id":1,"name":"alice"},{"id":2,"name":"bob"}]
 ```
+
+That's the complete source for a working API server with a health check and a database-backed users endpoint. It compiles to a native binary in milliseconds.
 
 ## Documentation
 

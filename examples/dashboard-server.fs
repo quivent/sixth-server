@@ -1,6 +1,6 @@
 \ dashboard-server.fs -- CK dashboard server built on lib/server.fs
 \
-\ Compile: ./bin/s3 server/dashboard-server.fs bin/dashboard-server
+\ Compile: ./bin/s3 examples/dashboard-server.fs bin/dashboard-server
 \ Run:     ./bin/dashboard-server [port]
 \ Default: http://localhost:3844
 \
@@ -8,12 +8,13 @@
 \ Serves JSON endpoints from .ck-metrics.db and static files
 \ from the dashboard/ directory.
 
-require modules/srm/srm.fs
-require modules/srm/db.fs
+require lib/core.fs
+require drivers/sqlite.fs
 require lib/tcp.fs
 require lib/http.fs
 require lib/json.fs
 require lib/server.fs
+require lib/db-json.fs
 
 \ ============================================================
 \ Database
@@ -32,7 +33,7 @@ require lib/server.fs
   F_INT  s" rw"        +field
   F_STR  s" status"    +field
   s" SELECT milestone_name,geomean_target,realwork_target,status FROM trajectory_milestones ORDER BY milestone_order"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-milestones ( fd -- )
   field-reset
@@ -41,7 +42,7 @@ require lib/server.fs
   F_STR s" status"   +field
   F_STR s" blocker"  +field
   s" SELECT milestone,criteria,CASE WHEN is_met=1 THEN 'done' ELSE 'todo' END,key_blocker FROM milestone_criteria ORDER BY milestone ASC"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-root-causes ( fd -- )
   field-reset
@@ -52,7 +53,7 @@ require lib/server.fs
   F_STR s" fixStatus"  +field
   F_STR s" ratioRange" +field
   s" SELECT root_cause,benchmark_names,fix_roadmap_item,benchmark_count,CASE WHEN fix_roadmap_item IS NOT NULL AND fix_roadmap_item!='' THEN 'linked' ELSE '' END,ratio_range_text FROM gap_analysis ORDER BY benchmark_count DESC"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-history ( fd -- )
   field-reset
@@ -62,18 +63,18 @@ require lib/server.fs
   F_INT s" saved"   +field
   F_INT s" session" +field
   s" SELECT title,before_geomean,after_geomean,instruction_savings,session_num FROM optimization_history ORDER BY session_num"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-landmines ( fd -- )
   s" SELECT rule FROM architectural_constraints ORDER BY constraint_name ASC"
-  sql-json-strings ;
+  db-json-strings ;
 
 : handle-failed ( fd -- )
   field-reset
   F_STR s" what" +field
   F_STR s" why"  +field
   s" SELECT attempt_name,reason_why FROM failed_attempts ORDER BY attempt_name"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-benchmark-results ( fd -- )
   field-reset
@@ -85,7 +86,7 @@ require lib/server.fs
   F_INT  s" run_gcc_ms"       +field
   F_DEC2 s" ratio"            +field
   s" SELECT br.name,br.status,br.compile_sixth_ms,br.compile_gcc_ms,br.run_sixth_ms,br.run_gcc_ms,CAST(br.ratio*100 AS INTEGER) FROM benchmark_results br WHERE br.run_timestamp=(SELECT run_timestamp FROM benchmark_results ORDER BY run_timestamp DESC LIMIT 1) ORDER BY br.name ASC"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-forth-bugs ( fd -- )
   field-reset
@@ -100,7 +101,7 @@ require lib/server.fs
   F_STR s" status"      +field
   F_INT s" fix_order"   +field
   s" SELECT id,title,severity,category,file,line_ref,effect,description,status,fix_order FROM forth_dashboard_bugs ORDER BY fix_order ASC,id ASC"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-sixthdb-bugs ( fd -- )
   field-reset
@@ -115,7 +116,7 @@ require lib/server.fs
   F_STR s" status"      +field
   F_INT s" fix_order"   +field
   s" SELECT id,title,severity,category,file,line_ref,effect,description,status,fix_order FROM sixthdb_bugs ORDER BY fix_order ASC,id ASC"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-impl-plans ( fd -- )
   field-reset
@@ -128,7 +129,7 @@ require lib/server.fs
   F_STR s" status"        +field
   F_STR s" step_type"     +field
   s" SELECT id,roadmap_item,step_number,title,description,file_target,status,step_type FROM implementation_plans ORDER BY roadmap_item,step_number"
-  sql-json-array ;
+  db-json-array ;
 
 : handle-design-docs ( fd -- )
   field-reset
@@ -146,7 +147,7 @@ require lib/server.fs
   F_STR s" updated_at"   +field
   F_STR s" parent_id"    +field
   s" SELECT id,roadmap_id,title,status,summary,motivation,design,dependencies,risks,verification,created_at,updated_at,parent_id FROM design_docs ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'draft' THEN 1 WHEN 'approved' THEN 2 WHEN 'done' THEN 3 ELSE 4 END,updated_at DESC"
-  sql-json-array ;
+  db-json-array ;
 
 \ ============================================================
 \ Custom Endpoints (require special logic)
@@ -166,21 +167,21 @@ variable stats-wrong
 : stats-query1 ( -- )
   dashboard-db
   s" WITH l AS (SELECT name,status,ratio,run_sixth_ms,run_gcc_ms,ROW_NUMBER() OVER (PARTITION BY name ORDER BY run_timestamp DESC) as rn FROM benchmark_results),p AS (SELECT * FROM l WHERE rn=1 AND status='PASS' AND ratio>0) SELECT CAST(ROUND(EXP(AVG(LN(ratio)))*100) AS INTEGER),CAST(COALESCE(ROUND(EXP(AVG(CASE WHEN run_sixth_ms>30 AND run_gcc_ms>30 THEN LN(ratio) END))*100),0) AS INTEGER),SUM(CASE WHEN ratio<1.0 THEN 1 ELSE 0 END) FROM p"
-  sql-exec sql-open
-  sql-row? if
+  db-exec db-open
+  db-row? if
     dup 0> if
       0 row-int stats-geo !
       1 row-int stats-rw !
       2 row-int stats-wins !
     then 2drop
   else 2drop then
-  sql-close ;
+  db-close ;
 
 : stats-query2 ( -- )
   dashboard-db
   s" WITH l AS (SELECT status,ROW_NUMBER() OVER (PARTITION BY name ORDER BY run_timestamp DESC) as rn FROM benchmark_results) SELECT COUNT(*),SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END),SUM(CASE WHEN status='RFAIL' THEN 1 ELSE 0 END),SUM(CASE WHEN status='CFAIL' THEN 1 ELSE 0 END),SUM(CASE WHEN status='GRFAIL' THEN 1 ELSE 0 END),SUM(CASE WHEN status NOT IN ('PASS','CFAIL','RFAIL','GRFAIL') THEN 1 ELSE 0 END) FROM l WHERE rn=1"
-  sql-exec sql-open
-  sql-row? if
+  db-exec db-open
+  db-row? if
     dup 0> if
       0 row-int stats-total !
       1 row-int stats-pass !
@@ -190,7 +191,7 @@ variable stats-wrong
       5 row-int stats-wrong !
     then 2drop
   else 2drop then
-  sql-close ;
+  db-close ;
 
 : handle-stats ( fd -- )
   >r
@@ -205,8 +206,8 @@ variable stats-wrong
   stats-wins @ s" benchmark_wins" rot json-key-num
   dashboard-db
   s" SELECT compile_time_sixth_ms,binary_size_bytes FROM core_metrics ORDER BY session_id DESC LIMIT 1"
-  sql-exec sql-open
-  sql-row? if
+  db-exec db-open
+  db-row? if
     dup 0> if
       0 row-int s" compile_time_ms" rot json-key-num
       1 row-int 1024 / s" binary_size_kb" rot json-key-num
@@ -214,7 +215,7 @@ variable stats-wrong
   else
     2drop 0 s" compile_time_ms" rot json-key-num 0 s" binary_size_kb" rot json-key-num
   then
-  sql-close
+  db-close
   stats-rw @ s" geomean_realwork" rot json-key-decimal2
   stats-pass @ s" status_pass" rot json-key-num
   stats-wrong @ s" status_wrong" rot json-key-num
@@ -230,8 +231,8 @@ variable stats-wrong
   str-reset json-begin
   dashboard-db
   s" SELECT band_wins_count,band_close_count,band_moderate_count,band_large_count,band_severe_count,band_catastrophic_count,band_wins_examples,band_close_examples,band_moderate_examples,band_large_examples,band_severe_examples,band_catastrophic_examples FROM benchmark_distribution ORDER BY session_id DESC LIMIT 1"
-  sql-exec sql-open
-  sql-row? if
+  db-exec db-open
+  db-row? if
     dup 0> if
       json-open-obj
       s" wins" json-key json-key-obj 0 row-int s" count" rot json-key-num  6 parse-pipe s" examples" json-key json-str-val json-close-obj
@@ -248,7 +249,7 @@ variable stats-wrong
   else
     2drop s" {}" str+
   then
-  sql-close
+  db-close
   r> http-200 ;
 
 \ --- /api/roadmap --- (tier-grouped nested structure)
@@ -262,8 +263,8 @@ variable prev-tier-len
   0 prev-tier-len !
   dashboard-db
   s" SELECT ts.tier_name,ri.item_name,COALESCE(ri.status,'todo'),COALESCE(ri.description,''),ri.estimated_impact_percent,COALESCE(CAST(ri.benchmarks_affected AS TEXT),'') FROM roadmap_items ri JOIN tier_status ts ON ri.tier=ts.tier_number ORDER BY ri.tier,ri.priority,ri.item_name"
-  sql-exec sql-open
-  begin sql-row? while
+  db-exec db-open
+  begin db-row? while
     dup 0> if
       0 parse-pipe
       2dup prev-tier prev-tier-len @ compare 0= if
@@ -288,7 +289,7 @@ variable prev-tier-len
       2drop
     then
   repeat 2drop
-  sql-close
+  db-close
   prev-tier-len @ 0> if json-close-arr json-close-obj then
   json-close-arr
   http-end-chunked ;
@@ -302,8 +303,8 @@ variable prev-tier-len
   json-key-arr
   dashboard-db
   s" SELECT timestamp,compiler,total,passed,cfail,rfail,grfail,sixth_wins,CAST(runtime_ratio*100 AS INTEGER),CAST(geomean*100 AS INTEGER),CAST(compile_ratio*100 AS INTEGER),CAST(pass_rate*100 AS INTEGER),wall_time_ms FROM benchmark_history ORDER BY timestamp DESC"
-  sql-exec sql-open
-  begin sql-row? while
+  db-exec db-open
+  begin db-row? while
     dup 0> if
       json-open-obj
       0 parse-pipe s" timestamp" json-key json-str-val
@@ -326,7 +327,7 @@ variable prev-tier-len
       2drop
     then
   repeat 2drop
-  sql-close
+  db-close
   json-close-arr
   json-close-obj
   http-end-chunked ;
@@ -338,8 +339,8 @@ variable prev-tier-len
   json-open-obj
   dashboard-db
   s" SELECT run_timestamp FROM benchmark_results ORDER BY run_timestamp DESC LIMIT 1"
-  sql-exec sql-open
-  sql-row? if
+  db-exec db-open
+  db-row? if
     dup 0> if
       0 parse-pipe s" run_timestamp" json-key json-str-val
     else
@@ -349,12 +350,12 @@ variable prev-tier-len
   else
     2drop s" run_timestamp" json-key-null
   then
-  sql-close
+  db-close
   s" failures" json-key json-key-arr
   dashboard-db
   s" SELECT br.name,br.status,br.compile_sixth_ms,br.run_sixth_ms,br.run_gcc_ms,ft.first_seen,ft.last_pass,ft.failing_since,ft.speculative_reason,ft.proposed_fix,ft.priority,ft.notes FROM benchmark_results br LEFT JOIN benchmark_failure_tracking ft ON br.name=ft.name WHERE br.run_timestamp=(SELECT run_timestamp FROM benchmark_results ORDER BY run_timestamp DESC LIMIT 1) AND br.status!='PASS' ORDER BY CASE br.status WHEN 'CFAIL' THEN 1 WHEN 'GRFAIL' THEN 2 WHEN 'RFAIL' THEN 3 END,br.name ASC"
-  sql-exec sql-open
-  begin sql-row? while
+  db-exec db-open
+  begin db-row? while
     dup 0> if
       json-open-obj
       0 parse-pipe s" name" json-key json-str-val
@@ -376,7 +377,7 @@ variable prev-tier-len
       2drop
     then
   repeat 2drop
-  sql-close
+  db-close
   json-close-arr
   json-close-obj
   http-end-chunked ;
@@ -388,8 +389,8 @@ variable prev-tier-len
   json-open-obj
   dashboard-db
   s" SELECT run_timestamp FROM benchmark_results ORDER BY run_timestamp DESC LIMIT 1"
-  sql-exec sql-open
-  sql-row? if
+  db-exec db-open
+  db-row? if
     dup 0> if
       0 parse-pipe s" run_timestamp" json-key json-str-val
     else
@@ -399,12 +400,12 @@ variable prev-tier-len
   else
     2drop s" run_timestamp" json-key-null
   then
-  sql-close
+  db-close
   s" priorities" json-key json-key-arr
   dashboard-db
   s" SELECT name,status,CAST(ratio*100 AS INTEGER),run_sixth_ms,run_gcc_ms FROM benchmark_results WHERE run_timestamp=(SELECT run_timestamp FROM benchmark_results ORDER BY run_timestamp DESC LIMIT 1) AND status='PASS' AND ratio IS NOT NULL ORDER BY ratio DESC LIMIT 5"
-  sql-exec sql-open
-  begin sql-row? while
+  db-exec db-open
+  begin db-row? while
     dup 0> if
       json-open-obj
       0 parse-pipe s" name" json-key json-str-val
@@ -419,7 +420,7 @@ variable prev-tier-len
       2drop
     then
   repeat 2drop
-  sql-close
+  db-close
   json-close-arr
   json-close-obj
   http-end-chunked ;
@@ -431,8 +432,8 @@ variable prev-tier-len
   json-open-obj
   dashboard-db
   s" SELECT benchmark_name,fix_category,note FROM bench_fixes ORDER BY benchmark_name ASC"
-  sql-exec sql-open
-  begin sql-row? while
+  db-exec db-open
+  begin db-row? while
     dup 0> if
       0 parse-pipe 2dup json-key json-key-obj
       1 parse-pipe s" fix" json-key json-str-val
@@ -442,7 +443,7 @@ variable prev-tier-len
       2drop
     then
   repeat 2drop
-  sql-close
+  db-close
   json-close-obj
   r> http-200 ;
 
@@ -560,7 +561,7 @@ variable cmd-slurp-pos
   s" /api/failing-benchmarks" ['] handle-failing-benchmarks add-route
   s" /api/priorities"        ['] handle-priorities        add-route
   s" /api/bench-fixes"       ['] handle-bench-fixes       add-route
-  s" /api/commands"          ['] handle-commands          add-route
+  s" /api/commands"           ['] handle-commands          add-route
   s" /api/ratio-bands"       ['] handle-ratio-bands       add-route
   s" /api/events"            ['] handle-events            add-route
   s" /health"                ['] handle-health            add-route ;
@@ -572,11 +573,12 @@ variable cmd-slurp-pos
 3844 constant DEFAULT-PORT
 
 : main ( -- )
-  srm-init
+  sqlite-init
+  db-json-init
   server-init
-  s" /tmp/dash-query.txt" dup sql-output-len ! sql-output-buf swap move
-  s" /tmp/dash-count.txt" dup sql-count-len ! sql-count-buf swap move
-  s" /tmp/dash-error.txt" dup sql-error-len ! sql-error-buf swap move
+  s" /tmp/dash-query.txt" sqlite-output-path!
+  s" /tmp/dash-count.txt" sqlite-count-path!
+  s" /tmp/dash-error.txt" sqlite-error-path!
   dashboard-db db-path!
   s" /dashboard.html" set-index
   register-routes

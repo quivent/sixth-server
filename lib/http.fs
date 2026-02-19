@@ -1,7 +1,9 @@
 \ lib/http.fs -- HTTP request parser + response helpers
-\ For CK dashboard server.
 \
-\ Uses:
+\ Requires (caller must require before this file):
+\   lib/core.fs   (str-reset, str+, str$, str-char, str-len, n>str)
+\
+\ Uses compiler primitives:
 \   read-file  ( addr u fd -- u2 ior )
 \   write-file ( addr u fd -- ior )
 

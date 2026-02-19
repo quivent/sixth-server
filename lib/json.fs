@@ -1,7 +1,9 @@
-\ lib/json.fs -- JSON generation for CK dashboard server
-\ Uses the str-reset/str+/str$/str-char pattern from lib/srm.fs.
-\ The SRM string buffer is used for building JSON responses.
-\ Caller must require lib/srm.fs first.
+\ lib/json.fs -- JSON generation for Sixth Server
+\ Uses the str-reset/str+/str$/str-char pattern from lib/core.fs.
+\ The core string buffer is used for building JSON responses.
+\
+\ Requires (caller must require before this file):
+\   lib/core.fs   (str-char, str+, n>str)
 
 \ ============================================================
 \ JSON nesting state (handles up to 8 levels deep)

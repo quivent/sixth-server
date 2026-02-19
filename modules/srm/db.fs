@@ -1,4 +1,4 @@
-\ lib/db.fs — Named queries for CK metrics database
+\ modules/srm/db.fs — Named queries for CK metrics database
 \ Uses SRM (Stack-Relational Mapper) for all database access.
 
 require modules/srm/srm.fs
@@ -110,8 +110,11 @@ require modules/srm/srm.fs
 
 \ ============================================================
 \ Generic Query Interface
+\ NOTE: These use srm- prefix to avoid colliding with the
+\ driver contract's db-exec ( db$ sql$ -- ) which has a
+\ different stack signature.
 \ ============================================================
 
-: db-query ( sql$ -- ) srm-print ;
-: db-exec ( sql$ -- ) srm-exec ;
-: db-count ( sql$ -- n ) srm-scalar ;
+: srm-q ( sql$ -- ) srm-print ;
+: srm-x ( sql$ -- ) srm-exec ;
+: srm-n ( sql$ -- n ) srm-scalar ;

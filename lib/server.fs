@@ -2,20 +2,29 @@
 \
 \ Provides:
 \   1. Route table with linear dispatch
-\   2. Field descriptor DSL for SQL-to-JSON endpoints
-\   3. Generic SQL-to-JSON-array handler (chunked)
-\   4. Generic SQL-to-JSON-strings handler (chunked)
-\   5. Server lifecycle (init, listen, serve)
+\   2. Index page support
+\   3. Static file serving
+\   4. Server lifecycle (init, listen, serve)
 \
 \ Requires (caller must require before this file):
-\   modules/srm/srm.fs   (str-buf, sql-exec, sql-open, sql-row?, etc.)
-\   lib/tcp.fs            (tcp-server-init, accept-tcp, close-tcp)
-\   lib/http.fs           (http-read-request, http-200, http-200-chunked, etc.)
-\   lib/json.fs           (json-begin, json-open-obj, json-key, etc.)
+\   lib/core.fs   (str=, str-reset, str+, str-char)
+\   lib/tcp.fs    (tcp-server-init, accept-tcp, close-tcp)
+\   lib/http.fs   (http-read-request, http-200, http-200-chunked, etc.)
+\
+\ Optional (for database endpoints):
+\   lib/json.fs       (json-begin, json-open-obj, json-key, etc.)
+\   lib/db-json.fs    (field-reset, +field, db-json-array, etc.)
+\   A database driver  (drivers/sqlite.fs or drivers/sixthdb-cli.fs, etc.)
 \
 \ Usage example:
 \
+\   require lib/core.fs
+\   require drivers/sqlite.fs
+\   require lib/tcp.fs
+\   require lib/http.fs
+\   require lib/json.fs
 \   require lib/server.fs
+\   require lib/db-json.fs
 \
 \   : handle-items ( fd -- )
 \     field-reset
@@ -23,7 +32,7 @@
 \     F_STR s" name"   +field
 \     F_DEC2 s" ratio" +field
 \     s" SELECT id,name,CAST(ratio*100 AS INTEGER) FROM items ORDER BY id"
-\     sql-json-array ;
+\     db-json-array ;
 \
 \   : handle-health ( fd -- )
 \     >r str-reset json-begin json-open-obj
@@ -35,122 +44,12 @@
 \     s" /health"    ['] handle-health add-route ;
 \
 \   : main ( -- )
-\     srm-init
+\     sqlite-init  db-json-init  server-init
 \     s" mydb.db" db-path!
-\     server-init
 \     s" /index.html" set-index
 \     register-routes
 \     3000 server-start ;
 \   main
-
-\ ============================================================
-\ Field Descriptor Types
-\ ============================================================
-
-0 constant F_STR    \ string: parse-pipe -> json-key + json-str-val
-1 constant F_INT    \ integer: row-int -> json-key-num
-2 constant F_DEC2   \ decimal*100: row-int -> json-key-decimal2
-
-\ ============================================================
-\ Field Descriptor Table (shared, filled per-request)
-\
-\ Each field entry: 3 cells = [type] [name-addr] [name-len]
-\ Filled by +field before calling sql-json-array.
-\ ============================================================
-
-16 constant MAX-FIELDS
-variable field-count
-create field-tbl 384 allot   \ MAX-FIELDS(16) * 3 entries * 8 bytes
-
-: field-reset ( -- ) 0 field-count ! ;
-
-: +field ( type name-addr name-u -- )
-  field-count @ MAX-FIELDS >= if 2drop drop exit then
-  field-count @ 3 cells * field-tbl + >r
-  r@ 2 cells + !
-  r@ cell+ !
-  r> !
-  1 field-count +! ;
-
-: field-type@ ( n -- type )
-  3 cells * field-tbl + @ ;
-
-: field-name@ ( n -- addr u )
-  3 cells * field-tbl + cell+ dup @ swap cell+ @ ;
-
-\ ============================================================
-\ Generic Row Emitter
-\
-\ Iterates field descriptors, extracts each column from the
-\ pipe-delimited row, emits as JSON key-value pairs.
-\ Row string is preserved by parse-pipe/row-int across fields.
-\ ============================================================
-
-: emit-row-json ( row-a row-u -- )
-  field-count @ 0 ?do
-    i field-type@ F_STR = if
-      i parse-pipe i field-name@ json-key json-str-val
-    else i field-type@ F_INT = if
-      i row-int i field-name@ rot json-key-num
-    else
-      i row-int i field-name@ rot json-key-decimal2
-    then then
-  loop
-  2drop ;
-
-\ ============================================================
-\ sql-json-array ( fd sql-a sql-u -- )
-\
-\ Chunked JSON array of objects from a SQL query.
-\ Uses db-path (from srm.fs) for the database.
-\ Uses field-tbl (from +field calls) for field descriptors.
-\
-\ Output: [{field1:val, field2:val, ...}, ...]
-\ ============================================================
-
-: sql-json-array ( fd sql-a sql-u -- )
-  >r >r
-  http-200-chunked
-  str-reset json-begin
-  json-open-arr
-  db-path r> r>
-  sql-exec sql-open
-  begin sql-row? while
-    dup 0> if
-      json-open-obj
-      emit-row-json
-      json-close-obj
-      chunk-check
-    else
-      2drop
-    then
-  repeat 2drop
-  sql-close
-  json-close-arr
-  http-end-chunked ;
-
-\ ============================================================
-\ sql-json-strings ( fd sql-a sql-u -- )
-\
-\ Chunked JSON array of bare strings from a single-column query.
-\ Uses db-path for the database.
-\
-\ Output: ["val1", "val2", ...]
-\ ============================================================
-
-: sql-json-strings ( fd sql-a sql-u -- )
-  >r >r
-  http-200-chunked
-  str-reset json-begin
-  json-open-arr
-  db-path r> r>
-  sql-exec sql-open
-  begin sql-row? while
-    dup 0> if json-str chunk-check else 2drop then
-  repeat 2drop
-  sql-close
-  json-close-arr
-  http-end-chunked ;
 
 \ ============================================================
 \ Route Table
@@ -215,20 +114,6 @@ variable index-path-len
 
 variable dispatch-fd
 
-\ String equality without return stack (safe inside do-loops)
-variable str=-n
-
-: str= ( a1 u1 a2 u2 -- flag )
-  rot over <> if 2drop drop false exit then
-  \ lengths match
-  str=-n !
-  begin str=-n @ 0> while
-    over c@ over c@ <> if 2drop false exit then
-    1+ swap 1+ swap
-    -1 str=-n +!
-  repeat
-  2drop true ;
-
 : route-dispatch ( fd -- )
   dispatch-fd !
   get-path
@@ -276,6 +161,5 @@ variable str=-n
 
 : server-init ( -- )
   0 route-count !
-  0 field-count !
   0 index-path-len !
   0 rpool-used ! ;

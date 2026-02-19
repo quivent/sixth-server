@@ -115,6 +115,26 @@ The route table holds up to 64 entries. Each entry stores a path string and an e
 - Dispatch is a linear scan using `str=` for exact path matching
 - Handler signature is always `( fd -- )`
 
+## Zero-Allocation Request Model
+
+No memory is allocated during request handling. Every buffer used by the framework is statically allocated at compile time:
+
+- `str-buf` (256KB), `str2-buf` (4KB), `resp-buf` (16KB), `cmd-buf` (4KB), `http-buf` (8KB) -- all created with `allot` at compile time
+- The route table (`route-tbl`, 1536 bytes) and path string pool (`route-pool`, 2KB) -- fixed at compile time
+- The field descriptor table (`field-tbl`, 384 bytes) -- fixed at compile time
+- The JSON nesting stack (`json-stack`, 64 bytes) -- fixed at compile time
+
+There is no `malloc`, no free list, no garbage collector. Buffers are reused across requests by resetting their length counters (`str-reset`, `resp-reset`, `cmd-reset`). This means:
+
+- No memory fragmentation over time
+- No GC pauses
+- No allocation failure paths to handle
+- Predictable, constant memory footprint
+
+The tradeoff is fixed capacity. The framework supports at most 64 routes, 16 fields per endpoint, 8 levels of JSON nesting, and a 256KB response body per chunk. These limits are generous for API server use cases and can be adjusted by changing constants and recompiling.
+
 ## Single-Threaded Model
 
 The server is single-threaded with a blocking accept loop. Each request is fully handled before the next is accepted. This is simple and correct for dashboard/API use cases. SSE connections send an initial event and close immediately -- the frontend reconnects periodically.
+
+The single-threaded model is a deliberate choice, not a limitation. It eliminates all synchronization overhead -- no mutexes, no atomic operations, no thread pool management, no shared-state bugs. For the target use case (internal dashboards, developer tools, API servers with moderate request rates), a single thread serving requests sequentially on native compiled code is more than sufficient.

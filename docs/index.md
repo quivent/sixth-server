@@ -81,6 +81,22 @@ Build and run:
 
 That's the complete source for a working API server with a health check and a database-backed users endpoint. It compiles to a native binary in milliseconds.
 
+## Performance
+
+The server itself has near-zero overhead. It's compiled native ARM64 code with no interpreter, no garbage collector, and no heap allocation during request handling. All buffers are statically allocated at compile time. Route dispatch is a linear scan over at most 64 entries. JSON generation writes directly into a pre-allocated 256KB buffer. There is no framework overhead in the conventional sense -- the handler code *is* the code that runs.
+
+The real performance variable is the database driver:
+
+| Driver | Per-query cost | Best for |
+|--------|---------------|----------|
+| **SQLite** (subprocess) | `fork` + `exec` + sqlite3 startup + file I/O | Existing SQLite databases, prototyping |
+| **SixthDB CLI** (subprocess) | `fork` + `exec` + sixthdb startup + `tr` pipe + file I/O | SixthDB databases without linking |
+| **SixthDB direct-link** | SQL parse + in-process execution over mmap | Maximum throughput, zero-overhead queries |
+
+The subprocess drivers pay shell overhead on every query: process creation, program loading, file writes, and file reads. The SixthDB direct-link driver eliminates all of this. The database is memory-mapped once at startup, queries execute in-process against the mapped pages, and results are read directly from memory buffers -- no `fork`, no `exec`, no temp files, no file I/O.
+
+See [Drivers](drivers#performance-comparison) for a detailed breakdown of what happens at each step.
+
 ## Documentation
 
 | Page | Description |
